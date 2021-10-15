@@ -26,5 +26,5 @@ if [ "${events}" == "" ] ; then
     echo -e "\nFailed to retrieve events URL for $1"
     exit 1
 fi
-watch --color -n 5 "curl -s -k $events | jq -C '.[-4:] | .[] | {event_time,message}' && echo '=========' && oc get agentclusterinstall -n $ns $1 -o jsonpath='{.status.conditions}' | jq -C '.[] | select(.status==\"False\" or ( (.type==\"Completed\" or .type==\"Failed\" or .type==\"Stopped\") and .status==\"True\") ) | {lastTransitionTime, message, reason}'"
+watch -t --color -n 5 "echo -e \"\033[0;32m  Cluster: $1  (ctrl-c to stop monitoring)\033[0;1m\"; curl -s -k $events | jq -C '.[-4:] | .[] | {event_time,message}' && echo '=========' && oc get agentclusterinstall -n $ns $1 -o jsonpath='{.status.conditions}' | jq -C '.[] | select(.status==\"False\" or ( (.type==\"Completed\" or .type==\"Failed\" or .type==\"Stopped\") and .status==\"True\") ) | {lastTransitionTime, message, reason}'"
 
