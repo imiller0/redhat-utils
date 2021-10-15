@@ -30,7 +30,12 @@ fi
 header(){
     echo -ne "\033[0;32m  Cluster: $clusterName   "
     TZ=UTC date +"%Y-%m-%d %H:%M:%S %Z" | tr -d '\n'
-    echo -e "   (ctrl-c to stop monitoring)\033[0;1m"
+    echo -e "   (ctrl-c to stop monitoring)\033[0;0m"
+}
+bmh(){
+    echo -n "BareMetalHost: "
+    oc get bmh -n $ns -o json | jq -j '.items[-1] |  "provisioning: ", .status.provisioning.state, "   power: ", .status.poweredOn, "   errors: ", .status.errorMessage '
+    echo
 }
 events() {
     curl -s -k $events | jq -C '.[-4:] | .[] | {event_time,message}'
@@ -42,9 +47,10 @@ conditions() {
 export -f header
 export -f events
 export -f conditions
+export -f bmh
 export events
 export ns
 export clusterName
 
-watch -t --color -n 5 " header ; events ; echo ========; conditions"
+watch -t --color -n 5 " header ; bmh; events ; echo ========; conditions"
 
