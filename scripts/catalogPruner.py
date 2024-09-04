@@ -1,5 +1,29 @@
 #!/bin/env python3
 
+##########################
+#
+# Interactive tool for pruning content from a catalog. Optionally a
+# config file can be included to select packages for
+# inclusion/exclusion.
+#
+# Config file format:
+# <operator name> <all|none|ask>
+# ...
+#
+# all  - Include all channels and bundles for the operator
+# ask  - Ask user (interactive, will ask about each bundle)
+# none - The entire operator will be omitted from the index
+#
+# To build the full index:
+# mkdir catalog_dir
+# opm generate dockerfile catalog_dir -i registry.redhat.io/openshift4/ose-operator-registry-rhel9:v4.16
+# opm render registry.redhat.io/redhat/redhat-operator-index:v4.16 -o yaml > catalog_dir/index.yaml
+# mv catalog_dir/index.yaml ./index-full.yaml
+# catalogPruner.py -c <config> -o catalog_dir/index.yaml index-full.yaml
+# opm validate catalog_dir
+# podman build . -f catalog_dir.Dockerfile -t quay.io/myuser/mycatalogindex:1.0
+##########################
+
 import argparse
 import yaml
 
@@ -7,7 +31,8 @@ parser=argparse.ArgumentParser(description="Filter OLM file based index")
 parser.add_argument("-o","--out", help="Output file", required=True)
 parser.add_argument("-v","--verbose", action="store_true", help="Be more verbose", required=False)
 parser.add_argument("-c","--config", help="yaml config file, pre-sets how packages are handled", required=False)
-parser.add_argument("infile", help="Input index file")
+parser.add_argument("infile", help="The full index file to be filtered")
+
 try:
     args = parser.parse_args()
 except Exception as e:
