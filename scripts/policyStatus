@@ -6,40 +6,71 @@ if [[ $# -lt 1 ]] ; then
   Show compliance status of the policy with individual CR status
   displayed in a more readable format.
 
-  Usage: $(basename $0) <namespace> <policyName>
+  Usage: $(basename $0) [-v] <namespace> [policyName]
 
 EOF
     exit 1
 fi
 
+POSITIONAL_ARGS=()
+VERBOSE=0
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -v|--verbose)
+            VERBOSE=1
+            shift
+            ;;
+        -*|--*)
+            echo "Unknown argument $1"
+            exit 1
+            ;;
+        *)
+            POSITIONAL_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+set -- "${POSITIONAL_ARGS[@]}" # fix the positional args
+
+show_policy() {
+    local
+    ns=$1
+    policy=$2
+    verbose=${3:-true}
+    lines=$(oc get policy -n $1 $2 -o jsonpath='{.status.details[0].history[0].message}'  | sed -e 's/;/\n/g' -e '$a\')
+    #lines=$(echo "$policyJson" | jq '.status.details[0].history[0].message'  | sed -e 's/;/\n/g' -e '$a\')
+
+    echo "$lines" | while IFS= read -r line; do
+        if [[ "$line" == *"violation"* ]] ; then
+            # Display violation lines in red
+            echo -e "\033[0;31m${line}\033[0;0m"
+        elif [[ "$verbose" == "false" ]] ; then
+            # If not verbose skip lines that are not a violation
+            continue
+        else
+            # Colorize the compliant messages in green
+            sub=$(echo "$line" | sed 's/\(template is compliant\|^Compliant\|^ *notification\)/\\033[0;32m\1\\033[0;0m/g')
+            echo -e "$sub"
+        fi
+    done
+}
+
+show_noncompliant() {
+    local
+    lines=$(oc get policy -n $1 -o jsonpath='{range .items[?(@.status.compliant=="NonCompliant")]}{.metadata.name}{"\n"}{end}')
+    echo "$lines" | while IFS= read -r line; do
+        show_policy $1 $line false
+        #oc get policy -n $1 $line
+    done
+}
+
+
 if [[ $# -lt 2 ]] ; then
     oc get policy -n $1 -o custom-columns=NAME:.metadata.name,'REMEDIATION ACTION':.spec.remediationAction,COMPLIANCE:.status.compliant,AGE:.metadata.creationTimestamp,WAVE:.metadata.annotations.'ran\.openshift\.io/ztp-deploy-wave' --sort-by .metadata.annotations.'ran\.openshift\.io/ztp-deploy-wave'
+    if [[ $VERBOSE -ne 0 ]] ; then
+        show_noncompliant $1
+    fi
     exit 0
 fi
 
-if [[ 0 == 1 ]] ; then
-policyJson=$(oc get policy -n $1 $2 -o json)
-#templateErr=$(oc get policy -n $1 $2 -o jsonpath='{.spec.policy-templates[0].objectDefinition.metadata.annotations.policy\.open-cluster-management\.io/hub-templates-error}')
-templateErr=$(echo "$policyJson" | jq '.spec.policy-templates[0].objectDefinition.metadata.annotations.\["policy.open-cluster-management.io/hub-templates-error"\]')
-templateErrMsg=${templateErr##*template:}
-if [[ "$templateErrMsg" != "" ]] ; then
-    # Error in red
-    echo -e "\033[0;31mTemplating error: ${templateErrMsg}\033[0;0m"
-    exit 1
-fi
-fi
-
-# Get the policy, extract the latest status message and then add newlines for each ';' and at the end
-lines=$(oc get policy -n $1 $2 -o jsonpath='{.status.details[0].history[0].message}'  | sed -e 's/;/\n/g' -e '$a\')
-#lines=$(echo "$policyJson" | jq '.status.details[0].history[0].message'  | sed -e 's/;/\n/g' -e '$a\')
-
-echo "$lines" | while IFS= read -r line; do
-    if [[ "$line" == *"violation"* ]] ; then
-        # Display violation lines in red
-        echo -e "\033[0;31m${line}\033[0;0m"
-    else
-        # Colorize the compliant messages in green
-        sub=$(echo "$line" | sed 's/\(template is compliant\|^Compliant\)/\\033[0;32m\1\\033[0;0m/g')
-        echo -e "$sub"
-    fi
-done
+show_policy $1 $2 true
