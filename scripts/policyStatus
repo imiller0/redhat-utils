@@ -40,6 +40,7 @@ show_policy() {
     lines=$(oc get policy -n $1 $2 -o jsonpath='{.status.details[0].history[0].message}'  | sed -e 's/;/\n/g' -e '$a\')
     #lines=$(echo "$policyJson" | jq '.status.details[0].history[0].message'  | sed -e 's/;/\n/g' -e '$a\')
 
+    echo $1 $2
     echo "$lines" | while IFS= read -r line; do
         if [[ "$line" == *"violation"* ]] ; then
             # Display violation lines in red
@@ -57,10 +58,12 @@ show_policy() {
 
 show_noncompliant() {
     local
-    lines=$(oc get policy -n $1 -o jsonpath='{range .items[?(@.status.compliant=="NonCompliant")]}{.metadata.name}{"\n"}{end}')
+    lines=$(oc get policy -n $1 -o jsonpath='{range .items[?(@.status.compliant=="NonCompliant")]}{.metadata.name}{"\n"}{end}' --sort-by .metadata.annotations.'ran\.openshift\.io/ztp-deploy-wave')
     echo "$lines" | while IFS= read -r line; do
-        show_policy $1 $line false
-        #oc get policy -n $1 $line
+        if [[ "$line" != "" ]] ; then
+            echo ---
+            show_policy $1 $line false
+        fi
     done
 }
 
