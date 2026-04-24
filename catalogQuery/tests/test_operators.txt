@@ -1,0 +1,8 @@
+advanced-cluster-management
+cluster-logging
+kubernetes-nmstate-operator
+lifecycle-agent
+local-storage-operator
+lvms-operator
+metallb-operator
+redhat-oadp-operator
