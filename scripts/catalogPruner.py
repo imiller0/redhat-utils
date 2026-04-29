@@ -30,7 +30,7 @@ import yaml
 parser=argparse.ArgumentParser(description="Filter OLM file based index")
 parser.add_argument("-o","--out", help="Output file", required=True)
 parser.add_argument("-v","--verbose", action="store_true", help="Be more verbose", required=False)
-parser.add_argument("-c","--config", help="yaml config file, pre-sets how packages are handled", required=False)
+parser.add_argument("-c","--config", help="yaml config file, pre-sets how packages are handled. Format is key: value pairs where key is the package name (eg metallb-operator) and the value is one of [all|none|ask]. Special key 'default' sets the default behavior.", required=False)
 parser.add_argument("infile", help="The full index file to be filtered")
 
 try:
@@ -60,8 +60,8 @@ def handleCurrent(currentYaml):
     yamlDict = None
     try:
         yamlDict = yaml.safe_load(single)
-    except:
-        print("Failed to load as yaml")
+    except Exception as e:
+        print("Failed to load as yaml: ",e)
     if yamlDict is None:
         print("Failed to parse")
         return
