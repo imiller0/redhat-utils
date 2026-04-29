@@ -6,3 +6,4 @@ local-storage-operator
 lvms-operator
 metallb-operator
 redhat-oadp-operator
+lightspeed-operator

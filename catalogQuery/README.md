@@ -131,6 +131,7 @@ The tool supports multiple File-Based Catalog (FBC) formats:
 - `bundles/channels/package.json` (directory structure)
 - `bundle-v*.json/channel.json/package.json` (versioned bundles)
 - `bundles.json/channels.json/package.json` (concatenated JSON files)
+- `index.json + bundle-v*.json` (index with individual bundle files)
 
 ## How It Works
 

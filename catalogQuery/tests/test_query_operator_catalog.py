@@ -30,6 +30,8 @@ from query_operator_catalog import (
     query_operator_all_channels_from_objects,
     query_operator_all_channels_directory_format,
     query_operator_all_channels_concatenated_json,
+    query_operator_index_format,
+    query_operator_all_channels_index_format,
     detect_container_tool,
     read_config_file,
     format_json_output,
@@ -1046,6 +1048,179 @@ class TestDuplicateScenarios:
         assert channel_version_map['release-2.10'] == 'advanced-cluster-management.v2.10.9'
         assert channel_version_map['release-2.11'] == 'advanced-cluster-management.v2.11.9'
         assert channel_version_map['release-2.12'] == 'advanced-cluster-management.v2.12.8'
+
+
+class TestIndexJsonFormat:
+    """Test index.json + bundle-v*.json format"""
+
+    def test_index_format_single_channel(self, tmp_path):
+        """Test querying operator from index.json format"""
+        operator_dir = tmp_path / "test-operator"
+        operator_dir.mkdir()
+
+        # Create index.json with package and channel
+        index_data = [
+            {
+                "schema": "olm.package",
+                "name": "test-operator",
+                "defaultChannel": "stable"
+            },
+            {
+                "schema": "olm.channel",
+                "name": "stable",
+                "entries": [
+                    {"name": "test-operator.v1.0.0"},
+                    {"name": "test-operator.v1.1.0"}
+                ]
+            }
+        ]
+
+        # Write as NDJSON (concatenated JSON)
+        index_file = operator_dir / "index.json"
+        with open(index_file, 'w') as f:
+            for obj in index_data:
+                json.dump(obj, f)
+
+        # Create bundle file
+        bundle = {
+            "schema": "olm.bundle",
+            "name": "test-operator.v1.1.0",
+            "package": "test-operator",
+            "properties": [
+                {
+                    "type": "olm.csv.metadata",
+                    "value": {
+                        "installModes": [
+                            {"type": "OwnNamespace", "supported": True},
+                            {"type": "AllNamespaces", "supported": False}
+                        ]
+                    }
+                }
+            ]
+        }
+
+        bundle_file = operator_dir / "bundle-v1.1.0.json"
+        with open(bundle_file, 'w') as f:
+            json.dump(bundle, f)
+
+        # Test query
+        result = query_operator_index_format(
+            str(operator_dir),
+            "test-operator",
+            None,
+            None
+        )
+
+        assert result is not None
+        assert result['name'] == 'test-operator'
+        assert result['channel'] == 'stable'
+        assert result['version'] == 'test-operator.v1.1.0'
+        assert len(result['installModes']) == 2
+
+    def test_index_format_all_channels(self, tmp_path):
+        """Test querying all channels from index.json format"""
+        operator_dir = tmp_path / "test-operator"
+        operator_dir.mkdir()
+
+        # Create index.json with package and multiple channels
+        index_data = [
+            {
+                "schema": "olm.package",
+                "name": "test-operator",
+                "defaultChannel": "stable"
+            },
+            {
+                "schema": "olm.channel",
+                "name": "stable",
+                "entries": [
+                    {"name": "test-operator.v1.1.0"}
+                ]
+            },
+            {
+                "schema": "olm.channel",
+                "name": "alpha",
+                "entries": [
+                    {"name": "test-operator.v1.2.0"}
+                ]
+            }
+        ]
+
+        # Write as NDJSON
+        index_file = operator_dir / "index.json"
+        with open(index_file, 'w') as f:
+            for obj in index_data:
+                json.dump(obj, f)
+
+        # Create bundle files
+        bundle1 = {
+            "schema": "olm.bundle",
+            "name": "test-operator.v1.1.0",
+            "package": "test-operator",
+            "properties": [
+                {
+                    "type": "olm.csv.metadata",
+                    "value": {
+                        "installModes": [
+                            {"type": "OwnNamespace", "supported": True}
+                        ]
+                    }
+                }
+            ]
+        }
+
+        bundle2 = {
+            "schema": "olm.bundle",
+            "name": "test-operator.v1.2.0",
+            "package": "test-operator",
+            "properties": [
+                {
+                    "type": "olm.csv.metadata",
+                    "value": {
+                        "installModes": [
+                            {"type": "AllNamespaces", "supported": True}
+                        ]
+                    }
+                }
+            ]
+        }
+
+        with open(operator_dir / "bundle-v1.1.0.json", 'w') as f:
+            json.dump(bundle1, f)
+
+        with open(operator_dir / "bundle-v1.2.0.json", 'w') as f:
+            json.dump(bundle2, f)
+
+        # Test query all channels
+        results = query_operator_all_channels_index_format(
+            str(operator_dir),
+            "test-operator"
+        )
+
+        assert len(results) == 2
+
+        # Check stable channel
+        stable_result = [r for r in results if r['channel'] == 'stable'][0]
+        assert stable_result['version'] == 'test-operator.v1.1.0'
+        assert stable_result['installModes'][0]['type'] == 'OwnNamespace'
+
+        # Check alpha channel
+        alpha_result = [r for r in results if r['channel'] == 'alpha'][0]
+        assert alpha_result['version'] == 'test-operator.v1.2.0'
+        assert alpha_result['installModes'][0]['type'] == 'AllNamespaces'
+
+    def test_index_format_missing_file(self, tmp_path):
+        """Test index format returns None when index.json doesn't exist"""
+        operator_dir = tmp_path / "test-operator"
+        operator_dir.mkdir()
+
+        result = query_operator_index_format(
+            str(operator_dir),
+            "test-operator",
+            None,
+            None
+        )
+
+        assert result is None
 
 
 if __name__ == '__main__':

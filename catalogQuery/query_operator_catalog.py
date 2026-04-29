@@ -777,6 +777,170 @@ def query_operator_all_channels_versioned_bundles(operator_dir, operator_name):
     return []
 
 
+def query_operator_index_format(operator_dir, operator_name, channel_name, version):
+    """
+    Query operator from index.json + bundle-v*.json format.
+
+    This format has:
+    - index.json: NDJSON file with olm.package and olm.channel objects
+    - bundle-v*.json: Individual bundle files
+
+    Args:
+        operator_dir: Path to operator directory
+        operator_name: Operator package name
+        channel_name: Channel name (None for default)
+        version: Bundle version (None for latest)
+
+    Returns:
+        Dict with operator info or None if format doesn't match
+    """
+    index_file = os.path.join(operator_dir, 'index.json')
+
+    if not os.path.exists(index_file):
+        return None
+
+    # Parse index.json as NDJSON
+    try:
+        objects = parse_ndjson(index_file)
+    except Exception:
+        return None
+
+    # Find package
+    package = None
+    for obj in objects:
+        if obj.get('schema') == 'olm.package' and obj.get('name') == operator_name:
+            package = obj
+            break
+
+    if not package:
+        return None
+
+    # Determine channel to use
+    target_channel = channel_name if channel_name else package.get('defaultChannel')
+    if not target_channel:
+        return None
+
+    # Find channel
+    channel = None
+    for obj in objects:
+        if (obj.get('schema') == 'olm.channel' and
+            obj.get('name') == target_channel):
+            channel = obj
+            break
+
+    if not channel:
+        return None
+
+    entries = channel.get('entries', [])
+    if not entries:
+        return None
+
+    # Get bundle name
+    bundle_name = version if version else entries[-1].get('name')
+
+    # Find and load bundle file
+    bundle_files = [f for f in os.listdir(operator_dir) if f.startswith('bundle-')]
+    for bundle_filename in bundle_files:
+        bundle_path = os.path.join(operator_dir, bundle_filename)
+        try:
+            bundle = load_json_file(bundle_path)
+            if isinstance(bundle, list):
+                bundle = bundle[0]
+
+            if bundle.get('name') == bundle_name:
+                install_modes = extract_install_modes(bundle)
+                if install_modes is not None:
+                    return {
+                        'name': operator_name,
+                        'channel': target_channel,
+                        'version': bundle.get('name'),
+                        'installModes': install_modes
+                    }
+        except Exception:
+            continue
+
+    return None
+
+
+def query_operator_all_channels_index_format(operator_dir, operator_name):
+    """
+    Query operator from index.json + bundle-v*.json format for all channels.
+
+    Args:
+        operator_dir: Path to operator directory
+        operator_name: Operator package name
+
+    Returns:
+        List of dicts with operator info for each channel, or empty list if format doesn't match
+    """
+    index_file = os.path.join(operator_dir, 'index.json')
+
+    if not os.path.exists(index_file):
+        return []
+
+    # Parse index.json as NDJSON
+    try:
+        objects = parse_ndjson(index_file)
+    except Exception:
+        return []
+
+    # Find package
+    package = None
+    for obj in objects:
+        if obj.get('schema') == 'olm.package' and obj.get('name') == operator_name:
+            package = obj
+            break
+
+    if not package:
+        return []
+
+    # Find all channels
+    channels = []
+    for obj in objects:
+        if obj.get('schema') == 'olm.channel':
+            channels.append(obj)
+
+    if not channels:
+        return []
+
+    results = []
+
+    # Process each channel
+    for channel in channels:
+        channel_name = channel.get('name')
+        entries = channel.get('entries', [])
+
+        if not entries:
+            continue
+
+        # Get latest bundle (last entry)
+        bundle_name = entries[-1].get('name')
+
+        # Find and load bundle file
+        bundle_files = [f for f in os.listdir(operator_dir) if f.startswith('bundle-')]
+        for bundle_filename in bundle_files:
+            bundle_path = os.path.join(operator_dir, bundle_filename)
+            try:
+                bundle = load_json_file(bundle_path)
+                if isinstance(bundle, list):
+                    bundle = bundle[0]
+
+                if bundle.get('name') == bundle_name:
+                    install_modes = extract_install_modes(bundle)
+                    if install_modes is not None:
+                        results.append({
+                            'name': operator_name,
+                            'channel': channel_name,
+                            'version': bundle.get('name'),
+                            'installModes': install_modes
+                        })
+                    break
+            except Exception:
+                continue
+
+    return results
+
+
 def detect_container_tool():
     """
     Detect which container tool is available.
@@ -1196,6 +1360,121 @@ def format_json_output(catalog, results, errors, output=sys.stdout):
     print('', file=output)  # Trailing newline
 
 
+def query_operator_from_directory(operator_dir, operator_name, channel, version, all_channels):
+    """
+    Query operator from directory, trying all supported catalog formats.
+
+    Tries formats in order:
+    1. catalog.json (NDJSON)
+    2. catalog.yaml (YAML multi-document)
+    3. bundles/channels directory structure
+    4. concatenated JSON files (bundles.json/channels.json)
+    5. versioned bundles (bundle-v*.json)
+    6. index.json + bundle files
+
+    Args:
+        operator_dir: Path to operator directory in configs
+        operator_name: Operator package name
+        channel: Channel name (None for default)
+        version: Bundle version (None for latest)
+        all_channels: If True, query all channels; if False, query single channel
+
+    Returns:
+        - If all_channels=True: list of result dicts (empty if not found)
+        - If all_channels=False: result dict or None if not found
+        - Special value 'YAML_REQUIRED' if catalog.yaml exists but PyYAML not available
+    """
+    # Try catalog.json format
+    catalog_json = os.path.join(operator_dir, 'catalog.json')
+    if os.path.exists(catalog_json):
+        try:
+            objects = parse_ndjson(catalog_json)
+            if all_channels:
+                results = query_operator_all_channels_from_objects(objects, operator_name)
+                if results:
+                    return results
+            else:
+                result = query_operator_from_objects(objects, operator_name, channel, version)
+                if result:
+                    return result
+        except Exception as e:
+            print(f'Warning: Failed to parse catalog.json for {operator_name}: {e}', file=sys.stderr)
+
+    # Try catalog.yaml format
+    catalog_yaml = os.path.join(operator_dir, 'catalog.yaml')
+    if os.path.exists(catalog_yaml):
+        if not YAML_SUPPORT:
+            return 'YAML_REQUIRED'
+        try:
+            objects = parse_yaml_catalog(catalog_yaml)
+            if objects:
+                if all_channels:
+                    results = query_operator_all_channels_from_objects(objects, operator_name)
+                    if results:
+                        return results
+                else:
+                    result = query_operator_from_objects(objects, operator_name, channel, version)
+                    if result:
+                        return result
+        except Exception as e:
+            print(f'Warning: Failed to parse catalog.yaml for {operator_name}: {e}', file=sys.stderr)
+
+    # Try bundles/channels directory format
+    try:
+        if all_channels:
+            results = query_operator_all_channels_directory_format(operator_dir, operator_name)
+            if results:
+                return results
+        else:
+            result = query_operator_directory_format(operator_dir, operator_name, channel, version)
+            if result:
+                return result
+    except Exception as e:
+        print(f'Warning: Failed to parse directory format for {operator_name}: {e}', file=sys.stderr)
+
+    # Try concatenated JSON files format
+    try:
+        if all_channels:
+            results = query_operator_all_channels_concatenated_json(operator_dir, operator_name)
+            if results:
+                return results
+        else:
+            result = query_operator_concatenated_json(operator_dir, operator_name, channel, version)
+            if result:
+                return result
+    except Exception as e:
+        print(f'Warning: Failed to parse concatenated JSON format for {operator_name}: {e}', file=sys.stderr)
+
+    # Try versioned bundles format
+    try:
+        if all_channels:
+            results = query_operator_all_channels_versioned_bundles(operator_dir, operator_name)
+            if results:
+                return results
+        else:
+            result = query_operator_versioned_bundles(operator_dir, operator_name, channel, version)
+            if result:
+                return result
+    except Exception as e:
+        print(f'Warning: Failed to parse versioned bundles format for {operator_name}: {e}', file=sys.stderr)
+
+    # Try index.json format
+    try:
+        if all_channels:
+            results = query_operator_all_channels_index_format(operator_dir, operator_name)
+            if results:
+                return results
+        else:
+            result = query_operator_index_format(operator_dir, operator_name, channel, version)
+            if result:
+                return result
+    except Exception as e:
+        print(f'Warning: Failed to parse index.json format for {operator_name}: {e}', file=sys.stderr)
+
+    # Nothing found
+    return [] if all_channels else None
+
+
 def query_operators(catalog_url, operator_specs, all_channels=False, tool=None):
     """
     Query operators from catalog.
@@ -1247,117 +1526,31 @@ def query_operators(catalog_url, operator_specs, all_channels=False, tool=None):
                 })
                 continue
 
-            result = None
-            channel_results = []
+            # Query operator using unified format detection
+            query_result = query_operator_from_directory(
+                operator_dir, operator_name, channel, version, all_channels
+            )
 
+            # Handle special YAML_REQUIRED marker
+            if query_result == 'YAML_REQUIRED':
+                errors.append({
+                    'operator': operator_name,
+                    'error': 'catalog.yaml format requires PyYAML (pip install pyyaml)'
+                })
+                continue
+
+            # Process results
             if all_channels:
-                # Try catalog.json format
-                catalog_json = os.path.join(operator_dir, 'catalog.json')
-                if os.path.exists(catalog_json):
-                    try:
-                        objects = parse_ndjson(catalog_json)
-                        channel_results = query_operator_all_channels_from_objects(objects, operator_name)
-                    except Exception as e:
-                        print(f'Warning: Failed to parse catalog.json for {operator_name}: {e}', file=sys.stderr)
-
-                # Try catalog.yaml format
-                if not channel_results:
-                    catalog_yaml = os.path.join(operator_dir, 'catalog.yaml')
-                    if os.path.exists(catalog_yaml):
-                        if not YAML_SUPPORT:
-                            errors.append({
-                                'operator': operator_name,
-                                'error': 'catalog.yaml format requires PyYAML (pip install pyyaml)'
-                            })
-                            continue
-                        try:
-                            objects = parse_yaml_catalog(catalog_yaml)
-                            if objects:
-                                channel_results = query_operator_all_channels_from_objects(objects, operator_name)
-                        except Exception as e:
-                            print(f'Warning: Failed to parse catalog.yaml for {operator_name}: {e}', file=sys.stderr)
-
-                # Try bundles/channels directory format
-                if not channel_results:
-                    try:
-                        channel_results = query_operator_all_channels_directory_format(operator_dir, operator_name)
-                    except Exception as e:
-                        print(f'Warning: Failed to parse directory format for {operator_name}: {e}', file=sys.stderr)
-
-                # Try concatenated JSON files format
-                if not channel_results:
-                    try:
-                        channel_results = query_operator_all_channels_concatenated_json(operator_dir, operator_name)
-                    except Exception as e:
-                        print(f'Warning: Failed to parse concatenated JSON format for {operator_name}: {e}', file=sys.stderr)
-
-                # Try versioned bundles format
-                if not channel_results:
-                    try:
-                        channel_results = query_operator_all_channels_versioned_bundles(operator_dir, operator_name)
-                    except Exception as e:
-                        print(f'Warning: Failed to parse versioned bundles format for {operator_name}: {e}', file=sys.stderr)
-
-                # Add all channel results
-                if channel_results:
-                    results.extend(channel_results)
+                if query_result:
+                    results.extend(query_result)
                 else:
                     errors.append({
                         'operator': operator_name,
                         'error': 'No installModes found or unsupported catalog format'
                     })
             else:
-                # Original single-channel logic
-                # Try catalog.json format
-                catalog_json = os.path.join(operator_dir, 'catalog.json')
-                if os.path.exists(catalog_json):
-                    try:
-                        objects = parse_ndjson(catalog_json)
-                        result = query_operator_from_objects(objects, operator_name, channel, version)
-                    except Exception as e:
-                        print(f'Warning: Failed to parse catalog.json for {operator_name}: {e}', file=sys.stderr)
-
-                # Try catalog.yaml format
-                if not result:
-                    catalog_yaml = os.path.join(operator_dir, 'catalog.yaml')
-                    if os.path.exists(catalog_yaml):
-                        if not YAML_SUPPORT:
-                            errors.append({
-                                'operator': operator_name,
-                                'error': 'catalog.yaml format requires PyYAML (pip install pyyaml)'
-                            })
-                            continue
-                        try:
-                            objects = parse_yaml_catalog(catalog_yaml)
-                            if objects:
-                                result = query_operator_from_objects(objects, operator_name, channel, version)
-                        except Exception as e:
-                            print(f'Warning: Failed to parse catalog.yaml for {operator_name}: {e}', file=sys.stderr)
-
-                # Try bundles/channels directory format
-                if not result:
-                    try:
-                        result = query_operator_directory_format(operator_dir, operator_name, channel, version)
-                    except Exception as e:
-                        print(f'Warning: Failed to parse directory format for {operator_name}: {e}', file=sys.stderr)
-
-                # Try concatenated JSON files format
-                if not result:
-                    try:
-                        result = query_operator_concatenated_json(operator_dir, operator_name, channel, version)
-                    except Exception as e:
-                        print(f'Warning: Failed to parse concatenated JSON format for {operator_name}: {e}', file=sys.stderr)
-
-                # Try versioned bundles format
-                if not result:
-                    try:
-                        result = query_operator_versioned_bundles(operator_dir, operator_name, channel, version)
-                    except Exception as e:
-                        print(f'Warning: Failed to parse versioned bundles format for {operator_name}: {e}', file=sys.stderr)
-
-                # Report result or error
-                if result:
-                    results.append(result)
+                if query_result:
+                    results.append(query_result)
                 else:
                     errors.append({
                         'operator': operator_name,
