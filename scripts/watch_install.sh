@@ -43,6 +43,8 @@ header(){
     sec=$(( $dur % 60 ))
     echo -ne " Duration $(printf '%02d:%02d:%02d' $hr $min $sec) "
     echo -e "   (ctrl-c to stop monitoring)\033[0;0m"
+    pct=$( oc get agentclusterinstall -n $ns $clusterName -o jsonpath="{.status.progress.totalPercentage}" 2>/dev/null )
+    echo -e "Progress: ${pct}%"
 }
 bmh(){
     echo -n "BareMetalHost: "
@@ -51,11 +53,15 @@ bmh(){
 }
 
 agent(){
-    agent=$(oc get agent -n $ns -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="SpecSynced")].message}{end}')
+    agent=$(oc get agent -n $ns -o jsonpath='{range .items[*]}{.spec.hostname}:{.status.conditions[?(@.type=="SpecSynced")].reason} {end}')
     if [[ $agent == *"error"* ]] ; then
         echo -e "Agent: \033[0;31m$agent   \033[0;0m "
     else
         echo -e "Agent: $agent   "
+    fi
+    stuck=$(oc get agent -n $ns -o jsonpath='{range .items[?(@.status.debugInfo.state=="installing-pending-user-action")]}{.spec.hostname} {end}')
+    if [[ "$stuck" != "" ]] ; then
+        echo -e "\033[0;31mStuck Agents: $stuck\033[0;0m "
     fi
 }
 
