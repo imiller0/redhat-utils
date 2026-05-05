@@ -7,3 +7,5 @@ lvms-operator
 metallb-operator
 redhat-oadp-operator
 lightspeed-operator
+sriov-network-operator
+ptp-operator

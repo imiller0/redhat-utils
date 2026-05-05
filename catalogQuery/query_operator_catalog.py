@@ -6,6 +6,7 @@ This tool extracts installModes from operator ClusterServiceVersions (CSVs)
 delivered via File-Based Catalog (FBC) format in Red Hat registry catalog indices.
 
 Supports multiple FBC formats:
+- configs/index.json (catalog-wide index, concatenated NDJSON)
 - catalog.json (concatenated NDJSON)
 - catalog.yaml (YAML multi-document, requires PyYAML)
 - bundles/channels/package.json (directory structure)
@@ -13,30 +14,30 @@ Supports multiple FBC formats:
 - bundles.json/channels.json/package.json (concatenated JSON files)
 
 Usage:
-    # Query specific operators
+    # Query specific operators (using version shorthand)
     ./query-operator-catalog.py \\
-        --catalog registry.redhat.io/redhat/redhat-operator-index:v4.21 \\
+        --catalog 4.21 \\
         --operators local-storage-operator,odf-operator
 
-    # Query from config file
+    # Query from config file (using full URL)
     ./query-operator-catalog.py \\
         --catalog registry.redhat.io/redhat/redhat-operator-index:v4.21 \\
         --config operators.txt
 
-    # Specify channel and version
+    # Specify channel and version (using version shorthand)
     ./query-operator-catalog.py \\
-        --catalog registry.redhat.io/redhat/redhat-operator-index:v4.21 \\
+        --catalog 4.21 \\
         --operators 'odf-operator:stable-4.11,acm:release-2.9:2.9.0'
 
     # Query all channels for operators
     ./query-operator-catalog.py \\
-        --catalog registry.redhat.io/redhat/redhat-operator-index:v4.21 \\
+        --catalog 4.22 \\
         --operators odf-operator \\
         --all-channels
 
     # JSON output
     ./query-operator-catalog.py \\
-        --catalog registry.redhat.io/redhat/redhat-operator-index:v4.21 \\
+        --catalog 4.21 \\
         --operators cluster-logging \\
         -o json
 
@@ -1502,6 +1503,17 @@ def query_operators(catalog_url, operator_specs, all_channels=False, tool=None):
     try:
         configs_dir = os.path.join(temp_dir, 'configs')
 
+        # Check for catalog-wide index.json format
+        catalog_index = os.path.join(configs_dir, 'index.json')
+        catalog_objects = None
+
+        if os.path.exists(catalog_index):
+            # Catalog-wide index.json format - parse it once
+            try:
+                catalog_objects = parse_ndjson(catalog_index)
+            except Exception as e:
+                print(f'Warning: Failed to parse catalog-wide index.json: {e}', file=sys.stderr)
+
         # Process each operator
         for spec in operator_specs:
             operator_name, channel, version = parse_operator_spec(spec)
@@ -1517,7 +1529,33 @@ def query_operators(catalog_url, operator_specs, all_channels=False, tool=None):
             if all_channels and channel:
                 print(f'Warning: Ignoring channel specification "{channel}" for {operator_name} due to --all-channels flag', file=sys.stderr)
 
-            # Check if operator directory exists
+            # If we have catalog-wide objects, query from them
+            if catalog_objects:
+                if all_channels:
+                    query_result = query_operator_all_channels_from_objects(catalog_objects, operator_name)
+                else:
+                    query_result = query_operator_from_objects(catalog_objects, operator_name, channel, version)
+
+                # Process results
+                if all_channels:
+                    if query_result:
+                        results.extend(query_result)
+                    else:
+                        errors.append({
+                            'operator': operator_name,
+                            'error': 'No installModes found or operator not in catalog'
+                        })
+                else:
+                    if query_result:
+                        results.append(query_result)
+                    else:
+                        errors.append({
+                            'operator': operator_name,
+                            'error': 'No installModes found or operator not in catalog'
+                        })
+                continue
+
+            # Otherwise, check if operator directory exists
             operator_dir = os.path.join(configs_dir, operator_name)
             if not os.path.exists(operator_dir):
                 errors.append({
@@ -1565,6 +1603,34 @@ def query_operators(catalog_url, operator_specs, all_channels=False, tool=None):
     return results, errors
 
 
+def normalize_catalog_url(catalog):
+    """
+    Normalize catalog argument to full URL.
+
+    If catalog looks like a version number (e.g., "4.21", "4.22"), expand it to
+    the well-known registry.redhat.io URL. Otherwise, return as-is.
+
+    Args:
+        catalog: Catalog string (version or full URL)
+
+    Returns:
+        Full catalog URL
+
+    Examples:
+        "4.21" -> "registry.redhat.io/redhat/redhat-operator-index:v4.21"
+        "4.22" -> "registry.redhat.io/redhat/redhat-operator-index:v4.22"
+        "registry.redhat.io/..." -> "registry.redhat.io/..." (unchanged)
+    """
+    # Check if this looks like a version number (e.g., "4.21", "4.22")
+    # Pattern: digits, optional dots and more digits, no slashes or colons
+    if re.match(r'^\d+\.\d+$', catalog):
+        # Expand to full registry URL
+        return f'registry.redhat.io/redhat/redhat-operator-index:v{catalog}'
+
+    # Return as-is if it already looks like a full URL
+    return catalog
+
+
 def parse_arguments(args):
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
@@ -1572,21 +1638,21 @@ def parse_arguments(args):
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
+  %(prog)s --catalog 4.21 --operators local-storage-operator,odf-operator
+
   %(prog)s --catalog registry.redhat.io/redhat/redhat-operator-index:v4.21 \\
            --operators local-storage-operator,odf-operator
 
-  %(prog)s --catalog registry.redhat.io/redhat/redhat-operator-index:v4.21 \\
-           --config operators.txt
+  %(prog)s --catalog 4.22 --config operators.txt
 
-  %(prog)s --catalog registry.redhat.io/redhat/redhat-operator-index:v4.21 \\
-           --operators local-storage-operator -o json
+  %(prog)s --catalog 4.21 --operators local-storage-operator -o json
         '''
     )
 
     parser.add_argument(
         '--catalog',
         required=True,
-        help='Catalog index to query (e.g., registry.redhat.io/redhat/redhat-operator-index:v4.21)'
+        help='Catalog version (e.g., 4.21, 4.22) or full catalog URL (e.g., registry.redhat.io/redhat/redhat-operator-index:v4.21)'
     )
 
     parser.add_argument(
@@ -1625,6 +1691,9 @@ def main():
     """Main entry point."""
     args = parse_arguments(sys.argv[1:])
 
+    # Normalize catalog URL (expand version-only format to full URL)
+    catalog_url = normalize_catalog_url(args.catalog)
+
     # Collect operator specs
     operator_specs = []
 
@@ -1646,7 +1715,7 @@ def main():
     # Query operators
     try:
         results, errors = query_operators(
-            args.catalog,
+            catalog_url,
             operator_specs,
             all_channels=args.all_channels,
             tool=args.tool
@@ -1657,9 +1726,9 @@ def main():
 
     # Format output
     if args.output == 'json':
-        format_json_output(args.catalog, results, errors)
+        format_json_output(catalog_url, results, errors)
     else:
-        format_table_output(args.catalog, results, errors)
+        format_table_output(catalog_url, results, errors)
 
     # Return non-zero if there were errors
     return 1 if errors else 0
